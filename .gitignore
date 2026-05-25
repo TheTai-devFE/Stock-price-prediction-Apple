@@ -21,3 +21,7 @@ env/
 data/
 *.csv
 *.xlsx
+
+.agent          # Loại bỏ thư mục .agent
+.*.agent        # Loại bỏ các file ẩn kiểu .*.agent
+.GEMINI.md      # Loại bỏ file .GEMINI.md
