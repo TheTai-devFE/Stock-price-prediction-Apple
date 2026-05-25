@@ -1,0 +1,23 @@
+# Ignore Python cache
+__pycache__/
+*.py[cod]
+*.so
+.Python
+
+# Ignore environment files
+.env
+.venv
+env/
+
+# Ignore OS files
+.DS_Store
+.DS_Store?
+
+# Ignore IDE
+.vscode/
+.idea/
+
+# Ignore data files (nếu file quá lớn)
+data/
+*.csv
+*.xlsx
