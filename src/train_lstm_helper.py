@@ -2,7 +2,7 @@ import os
 import numpy as np
 import tensorflow as tf
 from tensorflow.keras.models import Sequential
-from tensorflow.keras.layers import LSTM, Dense
+from tensorflow.keras.layers import LSTM, Dense, Dropout
 
 # Load residuals
 residuals_path = "scratch/residuals.npy"
@@ -25,10 +25,11 @@ tf.config.set_visible_devices([], 'GPU')
 model = Sequential([
     tf.keras.layers.Input(shape=(seq_length, 1)),
     LSTM(16, activation='tanh'),
+    Dropout(0.1),
     Dense(1)
 ])
 model.compile(optimizer='adam', loss='mse')
-model.fit(X_seq, y_seq, epochs=8, batch_size=512, verbose=0)
+model.fit(X_seq, y_seq, epochs=30, batch_size=128, verbose=0)
 
 # Save trained model
 model.save("scratch/lstm_model.keras")

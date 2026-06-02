@@ -1,26 +1,19 @@
+import os
 import pandas as pd
 import numpy as np
 import matplotlib.pyplot as plt
-from sklearn.model_selection import train_test_split
-from sklearn.linear_model import LinearRegression
-from xgboost import XGBRegressor
-from lightgbm import LGBMRegressor
-from catboost import CatBoostRegressor
-from sklearn.metrics import mean_squared_error, mean_absolute_error, r2_score
-import os
-from statsmodels.tsa.arima.model import ARIMA
-import tensorflow as tf
-from tensorflow.keras.models import Sequential
-from tensorflow.keras.layers import LSTM, Dense
-
-# Suppress TF logging
-os.environ['TF_CPP_MIN_LOG_LEVEL'] = '3'
-tf.get_logger().setLevel('ERROR')
+from src.models import (
+    LinearRegressionModel,
+    XGBoostModel,
+    LightGBMModel,
+    CatBoostModel,
+    ArimaLstmModel
+)
 
 class ModelTrainer:
     """
-    Class for Stage 6 & 7: Model Training & Evaluation.
-    Supports Linear Regression and XGBoost for stock price prediction.
+    Orchestrator for Model Training & Evaluation.
+    Maintains backwards compatibility while referencing modularized model components.
     """
 
     def __init__(self, report_path: str = "reports/models"):
@@ -41,8 +34,14 @@ class ModelTrainer:
             df = df.sort_values('date')
             df = df.drop(columns=['date'])
 
-        X = df.drop(columns=[target_col])
-        y = df[target_col]
+        leakage_cols = ['open', 'high', 'low', 'adj_close']
+        cols_to_drop = [c for c in leakage_cols if c in df.columns] + [target_col]
+        X = df.drop(columns=cols_to_drop)
+        # Sort columns alphabetically to ensure identical feature ordering across pipelines
+        X = X.reindex(sorted(X.columns), axis=1)
+        
+        # Target transformation: Price Difference (y_t = close_t - close_{t-1})
+        y = df[target_col] - df['lag_1']
 
         # Time-series split (take the last 20% for testing)
         split_idx = int(len(df) * (1 - test_size))
@@ -52,120 +51,91 @@ class ModelTrainer:
         return X_train, X_test, y_train, y_test
 
     def train_linear_regression(self, X_train, y_train):
-        print("[*] Training Linear Regression model...")
-        model = LinearRegression()
+        model = LinearRegressionModel()
         model.fit(X_train, y_train)
         self.models['LinearRegression'] = model
         return model
 
     def train_xgboost(self, X_train, y_train):
-        print("[*] Training XGBoost model...")
-        model = XGBRegressor(n_estimators=1000, learning_rate=0.05, max_depth=5, n_jobs=-1)
-        model.fit(X_train, y_train)
+        # Time-series validation split (last 10% of train data for early stopping)
+        split_idx = int(len(X_train) * 0.9)
+        X_tr, X_val = X_train.iloc[:split_idx], X_train.iloc[split_idx:]
+        y_tr, y_val = y_train.iloc[:split_idx], y_train.iloc[split_idx:]
+        
+        model = XGBoostModel()
+        model.fit(X_tr, y_tr, eval_set=[(X_val, y_val)], early_stopping_rounds=30)
         self.models['XGBoost'] = model
         return model
 
     def train_lightgbm(self, X_train, y_train):
-        print("[*] Training LightGBM model...")
-        model = LGBMRegressor(n_estimators=1000, learning_rate=0.05, max_depth=5, n_jobs=-1, random_state=42, verbose=-1)
-        model.fit(X_train, y_train)
+        split_idx = int(len(X_train) * 0.9)
+        X_tr, X_val = X_train.iloc[:split_idx], X_train.iloc[split_idx:]
+        y_tr, y_val = y_train.iloc[:split_idx], y_train.iloc[split_idx:]
+        
+        model = LightGBMModel()
+        model.fit(X_tr, y_tr, eval_set=[(X_val, y_val)], early_stopping_rounds=30)
         self.models['LightGBM'] = model
         return model
 
     def train_catboost(self, X_train, y_train):
-        print("[*] Training CatBoost model...")
-        model = CatBoostRegressor(iterations=1000, learning_rate=0.05, depth=5, random_seed=42, verbose=0)
-        model.fit(X_train, y_train)
+        split_idx = int(len(X_train) * 0.9)
+        X_tr, X_val = X_train.iloc[:split_idx], X_train.iloc[split_idx:]
+        y_tr, y_val = y_train.iloc[:split_idx], y_train.iloc[split_idx:]
+        
+        model = CatBoostModel()
+        model.fit(X_tr, y_tr, eval_set=[(X_val, y_val)], early_stopping_rounds=30)
         self.models['CatBoost'] = model
         return model
 
     def train_arima_lstm(self, X_train, y_train):
-        print("[*] Training ARIMA + LSTM Hybrid model...")
-        
-        # 1. Fit ARIMA (1, 1, 1) on closing prices
-        print("[*] Fitting ARIMA(1, 1, 1) part...")
-        arima_model = ARIMA(y_train, order=(1, 1, 1))
-        arima_fitted = arima_model.fit()
-        
-        # Get in-sample residuals directly using statsmodels resid attribute
-        train_residuals = arima_fitted.resid
-        # Drop any NaNs
-        train_residuals = train_residuals[~np.isnan(train_residuals)]
-        
-        # Save residuals to temporary npy file for subprocess
-        os.makedirs("scratch", exist_ok=True)
-        np.save("scratch/residuals.npy", train_residuals.values)
-        
-        # 2. Run LSTM in an isolated subprocess to avoid thread deadlocks
-        print("[*] Fitting LSTM part in clean subprocess to avoid OpenMP deadlock...")
-        import subprocess
-        result = subprocess.run(["venv/bin/python3", "src/train_lstm_helper.py"], capture_output=True, text=True)
-        if result.returncode != 0:
-            print("[!] Subprocess failed!")
-            print(result.stderr)
-            raise RuntimeError("LSTM training subprocess failed!")
-            
-        # Load trained Keras model
-        lstm_model = tf.keras.models.load_model("scratch/lstm_model.keras")
-        
-        self.models['ARIMA_LSTM'] = {
-            'arima': arima_fitted,
-            'lstm': lstm_model
-        }
-        print("[+] ARIMA + LSTM Hybrid model trained successfully.")
-        return self.models['ARIMA_LSTM']
+        model = ArimaLstmModel()
+        model.fit(X_train, y_train)
+        self.models['ARIMA_LSTM'] = model
+        return model
+
+    def train_all(self, X_train, y_train):
+        """
+        Train all 5 models sequentially.
+        """
+        print("\n--- Training All Models ---")
+        self.train_linear_regression(X_train, y_train)
+        self.train_xgboost(X_train, y_train)
+        self.train_lightgbm(X_train, y_train)
+        self.train_catboost(X_train, y_train)
+        self.train_arima_lstm(X_train, y_train)
+        print("[+] All models trained successfully.")
 
     def evaluate_model(self, model_name: str, X_test, y_test):
         """
         Evaluate model and store results.
         """
         if model_name not in self.models:
-            print(f"[!] Model {model_name} not found.")
-            return
-
+            print(f"[!] Model {model_name} not found. Fitting standard version...")
+            if model_name == 'LinearRegression':
+                # Automatic training if not already trained
+                raise ValueError("Model must be trained before calling evaluate_model.")
+            
         model = self.models[model_name]
-        if model_name == 'ARIMA_LSTM':
-            arima_model = model['arima']
-            lstm_model = model['lstm']
-            
-            # Predict ARIMA part
-            arima_test_preds = arima_model.predict(start=len(arima_model.fittedvalues), end=len(arima_model.fittedvalues) + len(y_test) - 1).values
-            
-            # Calculate rolling input sequences for LSTM using actual residuals
-            train_residuals = arima_model.resid
-            train_residuals = train_residuals[~np.isnan(train_residuals)]
-            
-            res_values = train_residuals.values if hasattr(train_residuals, 'values') else train_residuals
-            full_residuals = np.concatenate([res_values[-10:], (y_test.values - arima_test_preds)])
-            
-            X_seq_test = []
-            for i in range(len(full_residuals) - 10):
-                X_seq_test.append(full_residuals[i:(i + 10)])
-            X_seq_test = np.array(X_seq_test)
-            X_seq_test = np.reshape(X_seq_test, (X_seq_test.shape[0], X_seq_test.shape[1], 1))
-            
-            # Save test sequences to temporary npy file for subprocess
-            np.save("scratch/X_seq_test.npy", X_seq_test)
-            
-            # Predict in an isolated subprocess to avoid thread deadlocks
-            import subprocess
-            result = subprocess.run(["venv/bin/python3", "src/predict_lstm_helper.py"], capture_output=True, text=True)
-            if result.returncode != 0:
-                print("[!] Prediction subprocess failed!")
-                print(result.stderr)
-                raise RuntimeError("LSTM prediction subprocess failed!")
-                
-            # Load predicted residuals
-            lstm_test_preds = np.load("scratch/lstm_test_preds.npy")
-            predictions = arima_test_preds + lstm_test_preds
-        else:
-            predictions = model.predict(X_test)
+        
+        # Perform evaluation using the model class method
+        eval_res = model.evaluate(X_test, y_test)
+        
+        predictions_diff = eval_res['predictions']
+        
+        # Reconstruct absolute price from price difference
+        from sklearn.metrics import mean_squared_error, mean_absolute_error, r2_score
+        
+        # X_test contains 'lag_1' (yesterday's close price)
+        lag_1_values = X_test['lag_1'].values
+        
+        predictions_abs = predictions_diff + lag_1_values
+        y_test_abs = y_test.values + lag_1_values
+        
+        mse = mean_squared_error(y_test_abs, predictions_abs)
+        mae = mean_absolute_error(y_test_abs, predictions_abs)
+        r2 = r2_score(y_test_abs, predictions_abs)
 
-        mse = mean_squared_error(y_test, predictions)
-        mae = mean_absolute_error(y_test, predictions)
-        r2 = r2_score(y_test, predictions)
-
-        print(f"\n--- Evaluation Results for {model_name} ---")
+        print(f"\n--- Evaluation Results for {model_name} (Reconstructed Absolute Price) ---")
         print(f"MSE: {mse:.4f}")
         print(f"MAE: {mae:.4f}")
         print(f"R2 Score: {r2:.4f}")
@@ -174,12 +144,32 @@ class ModelTrainer:
             'mse': mse,
             'mae': mae,
             'r2': r2,
-            'predictions': predictions
+            'predictions': predictions_abs
         }
 
-        # Plot Actual vs Predicted
-        self.plot_predictions(model_name, y_test, predictions)
+        # Plot Actual vs Predicted (Using absolute prices)
+        # For plot labels consistency, we convert y_test_abs back to pandas Series
+        y_test_abs_series = pd.Series(y_test_abs, index=y_test.index)
+        self.plot_predictions(model_name, y_test_abs_series, predictions_abs)
         return self.results[model_name]
+
+    def evaluate_all(self, X_test, y_test) -> pd.DataFrame:
+        """
+        Evaluate all trained models and return a summary DataFrame of the metrics.
+        """
+        print("\n--- Evaluating All Models ---")
+        metrics_list = []
+        for name in self.models.keys():
+            res = self.evaluate_model(name, X_test, y_test)
+            metrics_list.append({
+                "Model": name,
+                "MSE": res['mse'],
+                "MAE": res['mae'],
+                "R2 Score": res['r2']
+            })
+        
+        df_metrics = pd.DataFrame(metrics_list)
+        return df_metrics
 
     def plot_predictions(self, model_name: str, y_test, predictions):
         plt.figure(figsize=(12, 6))
@@ -195,3 +185,36 @@ class ModelTrainer:
         plt.savefig(save_path)
         print(f"[*] Saved prediction plot to: {save_path}")
         plt.close()
+
+    def save_metrics_report(self, df_metrics: pd.DataFrame, filename: str = "latest_metrics.md"):
+        """
+        Save the evaluation metrics of all models to a Markdown file.
+        """
+        filepath = os.path.join(self.report_path, filename)
+        
+        # Ensure the directory exists
+        os.makedirs(self.report_path, exist_ok=True)
+        
+        # Write markdown contents
+        with open(filepath, "w", encoding="utf-8") as f:
+            f.write("# 🍎 BÁO CÁO CẬP NHẬT ĐỘ ĐO ĐÁNH GIÁ MÔ HÌNH MỚI NHẤT\n\n")
+            f.write(f"Thời gian ghi nhận: {pd.Timestamp.now().strftime('%Y-%m-%d %H:%M:%S')}\n\n")
+            f.write("Dưới đây là các chỉ số đánh giá độ chính xác thu được từ lượt huấn luyện mới nhất:\n\n")
+            
+            # Format DataFrame as Markdown table
+            df_formatted = df_metrics.copy()
+            df_formatted['MSE'] = df_formatted['MSE'].map('{:,.6f}'.format)
+            df_formatted['MAE'] = df_formatted['MAE'].map('{:,.6f}'.format)
+            df_formatted['R2 Score'] = df_formatted['R2 Score'].map('{:,.6f}'.format)
+            
+            # Generate markdown table manually to avoid 'tabulate' dependency
+            headers = list(df_formatted.columns)
+            markdown_table = []
+            markdown_table.append("| " + " | ".join(headers) + " |")
+            markdown_table.append("| " + " | ".join(["---"] * len(headers)) + " |")
+            for _, row in df_formatted.iterrows():
+                markdown_table.append("| " + " | ".join([str(val) for val in row]) + " |")
+            f.write("\n".join(markdown_table))
+            f.write("\n\n---\n*Báo cáo được xuất tự động bởi hệ thống ModelTrainer.*")
+        print(f"[+] Saved latest metrics report to: {filepath}")
+
