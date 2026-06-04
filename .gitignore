@@ -22,9 +22,16 @@ data/
 *.csv
 *.xlsx
 
+# Ignore Agent files
+.agent
+.*.agent
+
 # Ignore GEMINI.md
 .GEMINI.md
 
+# Ignore model training info and reports
+catboost_info/
+reports/
+
 # Ignore Vietnamese README
 README.vi.md
-
