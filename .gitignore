@@ -28,6 +28,7 @@ data/
 
 # Ignore GEMINI.md
 .GEMINI.md
+GEMINI.md
 
 # Ignore model training info and reports
 catboost_info/
